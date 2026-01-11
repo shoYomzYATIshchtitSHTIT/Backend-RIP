@@ -368,20 +368,24 @@ func (h *CompositionHandler) CompleteComposition(ctx *gin.Context) {
 
 	logrus.Infof("Composition %d status updated to 'Завершена' in database", id)
 
-	// ЗАПУСКАЕМ АСИНХРОННЫЙ РАСЧЁТ В DJANGO-СЕРВИСЕ
+	// ЗАПУСКАЕМ АСИНХРОННЫЙ РАСЧЁТ В DJANGO-СЕРВИСЕ (ТОЛЬКО ДЛЯ ЗАВЕРШЁННЫХ!)
 	go func(compositionID uint) {
-		logrus.Infof("Starting async Django calculation for composition %d", compositionID)
+		logrus.Infof("🚀 Starting async Django calculation for composition %d", compositionID)
 
-		// Подготовка запроса к Django-сервису
+		// Подготовка запроса к Django-сервису С ТОКЕНОМ
 		payload := map[string]interface{}{
 			"composition_id": compositionID,
+			"token":          "LAB8_ASYNC_TOKEN", // Токен для псевдоавторизации
 		}
 
 		jsonData, err := json.Marshal(payload)
 		if err != nil {
-			logrus.Errorf("Failed to marshal request for composition %d: %v", compositionID, err)
+			logrus.Errorf("❌ Failed to marshal request for composition %d: %v", compositionID, err)
 			return
 		}
+
+		logrus.Infof("📤 Sending request to Django: http://localhost:8001/calculate/")
+		logrus.Infof("📦 Payload with token: %s", string(jsonData))
 
 		// Вызов Django-сервиса
 		startTime := time.Now()
@@ -392,7 +396,7 @@ func (h *CompositionHandler) CompleteComposition(ctx *gin.Context) {
 		)
 
 		if err != nil {
-			logrus.Errorf("Failed to call Django service for composition %d: %v", compositionID, err)
+			logrus.Errorf("❌ Failed to call Django service for composition %d: %v", compositionID, err)
 			return
 		}
 		defer resp.Body.Close()
@@ -401,18 +405,22 @@ func (h *CompositionHandler) CompleteComposition(ctx *gin.Context) {
 		logrus.Infof("📨 Django response for composition %d: HTTP %d (took %v)",
 			compositionID, resp.StatusCode, duration)
 
-		if resp.StatusCode != http.StatusOK {
-			logrus.Errorf("Django service returned error for composition %d: HTTP %d",
+		if resp.StatusCode == http.StatusForbidden {
+			logrus.Errorf("🔐 Django returned 403 Forbidden - invalid token for composition %d", compositionID)
+			body, _ := io.ReadAll(resp.Body)
+			logrus.Errorf("Error message: %s", string(body))
+		} else if resp.StatusCode != http.StatusOK {
+			logrus.Errorf("❌ Django service returned error for composition %d: HTTP %d",
 				compositionID, resp.StatusCode)
 			body, _ := io.ReadAll(resp.Body)
 			logrus.Errorf("Response body: %s", string(body))
 		} else {
-			logrus.Infof("Django service accepted calculation request for composition %d",
+			logrus.Infof("✅ Django service accepted calculation request for composition %d",
 				compositionID)
 
 			// Предсказываем время завершения расчёта
 			estimatedCompletion := time.Now().Add(8 * time.Second)
-			logrus.Infof("Estimated calculation completion for composition %d: %v",
+			logrus.Infof("⏰ Estimated calculation completion for composition %d: %v",
 				compositionID, estimatedCompletion.Format("15:04:05"))
 		}
 	}(uint(id))
